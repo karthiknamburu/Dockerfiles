@@ -1,0 +1,135 @@
+FROM ubuntu:14.04
+MAINTAINER Karthik Namburu <namburu.karthik@gmail.com>
+
+RUN apt-get -y update
+
+#Install ruby dependencies
+RUN apt-get install -y wget curl \
+    build-essential git git-core \
+    libssl-dev libreadline-dev libyaml-dev libsqlite3-dev sqlite3 libxml2-dev libxslt1-dev
+
+#Install the Proj4 lib for rgeo gem
+RUN curl -fSL -o proj.tar.gz "http://download.osgeo.org/proj/proj-4.8.0.tar.gz" \
+      && mkdir -p /tmp/proj4 \
+      && tar -xzf proj.tar.gz -C /tmp/proj4/ \
+      && rm proj.tar.gz \
+      && curl -fSL -o proj-datumgrid.tar.gz "http://download.osgeo.org/proj/proj-datumgrid-1.5.tar.gz" \
+      && tar -xzf proj-datumgrid.tar.gz -C /tmp/proj4/proj-4.8.0/nad \
+      && rm proj-datumgrid.tar.gz \
+      && cd /tmp/proj4/proj-4.8.0 \
+      && ./configure \
+      && make \
+      && make install \
+      && rm -r /tmp/proj4
+
+RUN apt-get -y update
+
+# Intall software-properties-common for add-apt-repository and Image Magick
+RUN apt-get install --no-install-recommends --force-yes  -y software-properties-common
+RUN apt-get install --no-install-recommends --force-yes  -y imagemagick
+RUN apt-get install --no-install-recommends --force-yes  -y libmagickwand-dev
+
+RUN apt-get update
+
+# Install ruby-install
+RUN cd /tmp &&\
+  wget -O ruby-install-0.6.0.tar.gz https://github.com/postmodern/ruby-install/archive/v0.6.0.tar.gz \
+  && tar -xzvf ruby-install-0.6.0.tar.gz \
+  && cd ruby-install-0.6.0/ \
+  && make install
+
+# Install MRI Ruby
+RUN ruby-install ruby 2.2.2
+
+# Add Ruby binaries to $PATH
+ENV PATH /opt/rubies/ruby-2.2.2/bin:$PATH
+
+# Add options to gemrc
+RUN echo "install: --no-document\nupdate: --no-document" > ~/.gemrc
+
+# Install bundler
+RUN gem install bundler
+
+RUN apt-get -y update
+
+# Install nodejs
+RUN apt-get install -qq -y nodejs
+
+#Install Passenger GEM
+RUN gem install passenger
+RUN apt-get install -y apache2-mpm-worker apache2-threaded-dev apache2-mpm-prefork apache2-prefork-dev libapr1-dev libaprutil1-dev libcurl4-openssl-dev
+
+
+RUN apt-get install -y libgmp-dev \
+    apache2  zlibc zlib1g-dev \
+    zlib1g \
+    libreadline6 libreadline6-dev
+
+RUN apt-get -y update
+
+#Install Passenger and Apache2 module
+RUN passenger-install-apache2-module --auto && apt-get -y update
+
+# Install the latest postgresql lib for pg gem
+RUN apt-get -y update
+RUN apt-get install -y --force-yes postgresql postgresql-contrib
+RUN apt-get install -y --force-yes libpq-dev
+
+#Set the TimeZone
+RUN ln -f -s /usr/share/zoneinfo/America/New_York /etc/localtime
+
+#Adding the configuration files to start Passenger and Apache
+ADD apache2.conf /etc/apache2/
+ADD 000-default.conf /etc/apache2/sites-available/
+ADD passenger.conf /etc/apache2/mods-available/
+ADD passenger.load /etc/apache2/mods-available/
+
+RUN apt-get -y update
+
+#Enabling the passenger module
+RUN a2enmod passenger
+
+RUN a2enmod rewrite
+
+RUN apachectl restart
+
+#Change the user to root
+USER root
+
+#create an user app
+RUN useradd -ms /bin/bash app
+
+WORKDIR /var/www/sims
+ENV RAILS_ENV development
+
+# Install Gems
+ADD Gemfile /var/www/sims/Gemfile
+ADD Gemfile.lock /var/www/sims/Gemfile.lock
+RUN bundle --deployment
+
+RUN apt-get install  -y libcurl4-openssl-dev apache2-mpm-worker apache2-threaded-dev libapr1-dev libaprutil1-dev
+
+ENV BUNDLE_DISABLE_SHARED_GEMS 1
+ENV BUNDLE_PATH /var/www/sims/vendor/bundle
+
+RUN apt-get -y update
+
+# Adding SIMS code
+ADD . /var/www/sims
+
+RUN chown -R app:app /var/www/sims
+
+# Install foreman
+RUN gem install foreman
+
+# Precompiling SIMS assets
+RUN bundle exec rake assets:precompile
+
+# Expose port numbers
+EXPOSE 80 443
+
+USER root
+
+#CMD foreman start -f Procfile
+
+ENTRYPOINT service apache2 start && tail -f /var/log/apache2/error.log
